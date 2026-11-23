@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Air Harp – נבל אוויר</title>
+<meta name="description" content="נגנו על נבל של אור באוויר, עם המצלמה. הכול רץ בדפדפן – שום וידאו לא יוצא מהמכשיר.">
+<meta property="og:title" content="🎶 נבל אוויר – Air Harp">
+<meta property="og:description" content="נגנו על נבל של אור באוויר, עם המצלמה. הכול רץ בדפדפן – שום וידאו לא יוצא מהמכשיר.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#05060a">
+<style>
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf5;touch-action:none;-webkit-user-select:none;user-select:none}
+  [hidden]{display:none !important}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  /* not display:none – some browsers stop decoding frames of a hidden video, so the canvas stays black */
+  video{position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:radial-gradient(ellipse at center,#141a2b 0%,#05060a 70%);z-index:5;text-align:center;padding:24px}
+  #ui h1{margin:0;font-weight:600;letter-spacing:.5px}
+  #ui p{margin:0;max-width:520px;line-height:1.6;color:#aab3c8}
+  button{background:#7cf3c4;color:#05201a;border:0;border-radius:999px;padding:12px 28px;font-size:17px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  #gear{position:fixed;top:12px;right:12px;z-index:4;width:44px;height:44px;padding:0;font-size:22px;line-height:44px;background:rgba(10,14,24,.6);color:#e8ecf5;border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(6px)}
+  #hud{position:fixed;top:64px;right:12px;max-width:calc(100vw - 48px);max-height:calc(100vh - 140px);overflow-y:auto;z-index:4;background:rgba(10,14,24,.6);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 14px;font-size:13px;line-height:1.7}
+  #hud label{display:flex;gap:8px;align-items:center;cursor:pointer}
+  #status{color:#7cf3c4}
+</style>
+</head>
+<body>
+<video id="video" playsinline muted></video>
+<canvas id="c"></canvas>
+
+<button id="gear" hidden aria-label="הגדרות" aria-expanded="false">⚙️</button>
+<div id="hud" hidden>
+  <div id="status">טוען…</div>
+  <label><input type="checkbox" id="allFingers"> לפרוט עם כל האצבעות</label>
+  <label>סולם:
+    <select id="scale">
+      <option value="minpent">פנטטוני מינורי</option>
+      <option value="majpent">פנטטוני מז'ורי</option>
+      <option value="hijaz">חיג'אז</option>
+      <option value="dorian">דורי</option>
+    </select>
+  </label>
+  <label>בהירות מצלמה: <input type="range" id="camBright" min="0" max="100" value="75"></label>
+  <label><input type="checkbox" id="showSkel" checked> הצג נקודות ושלד על הידיים</label>
+  <label><input type="checkbox" id="showNums"> הצג מספרי נקודות (0–20)</label>
+  <label><input type="checkbox" id="showPip" checked> חלון מצלמה קטן בפינה</label>
+  <div style="color:#8892a8">הרחקת הידיים = צליל בהיר יותר</div>
+</div>
+
+<div id="ui">
+  <h1>🎶 נבל אוויר</h1>
+  <p>העבר את קצה האצבע דרך המיתרים כדי לפרוט. המצלמה מעובדת מקומית בדפדפן – שום דבר לא נשלח החוצה.</p>
+  <p style="font-size:14px">📱 בטלפון: הניחו אותו יציב מולכם. באייפון – כבו את מצב השקט, אחרת לא יישמע צליל.</p>
+  <button id="start">הפעל מצלמה וסאונד</button>
+  <p id="err" style="color:#ff8a8a"></p>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const allFingersEl = document.getElementById('allFingers');
+const scaleEl = document.getElementById('scale');
+const camBrightEl = document.getElementById('camBright');
+const showSkelEl = document.getElementById('showSkel');
+const showNumsEl = document.getElementById('showNums');
+const showPipEl = document.getElementById('showPip');
+
+let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+function resize(){
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  layoutStrings();
+}
+window.addEventListener('resize', resize);
+
+// ---------- Scales / strings ----------
+const SCALES = {
+  minpent: [0,3,5,7,10],
+  majpent: [0,2,4,7,9],
+  hijaz:   [0,1,4,5,7,8,10],
+  dorian:  [0,2,3,5,7,9,10],
+};
+const NUM_STRINGS = 9;
+const BASE_MIDI = 45; // A2
+let strings = [];
+
+function buildNotes(){
+  const steps = SCALES[scaleEl.value];
+  const notes = [];
+  let i = 0;
+  while (notes.length < NUM_STRINGS){
+    const oct = Math.floor(i / steps.length);
+    notes.push(BASE_MIDI + 12*oct + steps[i % steps.length]);
+    i++;
+  }
+  return notes;
+}
+const midiToHz = m => 440 * Math.pow(2, (m-69)/12);
+const hue = i => 160 + i * (200 / NUM_STRINGS);
+
+function layoutStrings(){
+  const notes = buildNotes();
+  strings = notes.map((midi, i) => {
+    // top = highest pitch; slight alternating tilt for a "woven" look
+    const t = 1 - i / (NUM_STRINGS - 1);
+    const y = H * (0.14 + 0.72 * t);
+    const tilt = (i % 2 ? 1 : -1) * H * 0.03;
+    const old = strings[i] || {};
+    return {
+      x1: W*0.08, y1: y - tilt, x2: W*0.92, y2: y + tilt,
+      midi, freq: midiToHz(midi), hue: hue(i),
+      amp: old.amp || 0, phase: 0, hitT: old.hitT ?? 0.5, last: 0,
+    };
+  });
+}
+scaleEl.addEventListener('change', layoutStrings);
+
+// ---------- Audio (Karplus-Strong plucked string) ----------
+let ac, master, filter, wetGain;
+function setupAudio(){
+  ac = new (window.AudioContext || window.webkitAudioContext)({latencyHint:'interactive'});
+  master = ac.createGain(); master.gain.value = 0.8;
+  filter = ac.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 3500; filter.Q.value = 0.7;
+  const conv = ac.createConvolver(); conv.buffer = makeImpulse(2.8, 2.5);
+  wetGain = ac.createGain(); wetGain.gain.value = 0.35;
+  const comp = ac.createDynamicsCompressor();
+  master.connect(filter);
+  filter.connect(comp);
+  filter.connect(conv); conv.connect(wetGain); wetGain.connect(comp);
+  comp.connect(ac.destination);
+}
+function makeImpulse(seconds, decay){
+  const len = ac.sampleRate * seconds;
+  const buf = ac.createBuffer(2, len, ac.sampleRate);
+  for (let ch = 0; ch < 2; ch++){
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, decay);
+  }
+  return buf;
+}
+function pluck(freq, velocity, pan){
+  const sr = ac.sampleRate;
+  const dur = 3.0;
+  const len = Math.floor(sr * dur);
+  const buf = ac.createBuffer(1, len, sr);
+  const out = buf.getChannelData(0);
+  const N = Math.max(2, Math.round(sr / freq));
+  // excitation: noise, low-passed more for soft plucks
+  const bright = 0.35 + 0.6 * velocity;
+  let prev = 0;
+  for (let i = 0; i < N; i++){
+    const n = Math.random()*2-1;
+    prev = prev + bright * (n - prev);
+    out[i] = prev;
+  }
+  // per-sample decay chosen so the note rings ~T60 seconds (longer for low strings)
+  const t60 = 1.2 + 1.3 * Math.min(1, 110/freq);
+  const decay = Math.exp(Math.log(0.001) / (t60 * sr));
+  for (let i = N; i < len; i++){
+    out[i] = decay * 0.5 * (out[i-N] + out[i-N-1 >= 0 ? i-N-1 : i-N]);
+  }
+  const src = ac.createBufferSource(); src.buffer = buf;
+  const g = ac.createGain(); g.gain.value = 0.15 + 0.55 * velocity;
+  const p = ac.createStereoPanner ? ac.createStereoPanner() : null;
+  if (p){ p.pan.value = pan; src.connect(g); g.connect(p); p.connect(master); }
+  else { src.connect(g); g.connect(master); }
+  src.start();
+}
+
+// ---------- Hand tracking ----------
+let landmarker;
+async function setupTracking(){
+  statusEl.textContent = 'טוען מודל זיהוי ידיים…';
+  const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const opts = (delegate) => ({
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate,
+    },
+    runningMode: "VIDEO",
+    numHands: 2,
+    minHandDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+  try { landmarker = await HandLandmarker.createFromOptions(fileset, opts("GPU")); }
+  catch { landmarker = await HandLandmarker.createFromOptions(fileset, opts("CPU")); }
+}
+async function setupCamera(){
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width:{ideal:1280}, height:{ideal:720}, facingMode:'user' }, audio:false });
+  video.srcObject = stream;
+  await video.play();
+}
+
+const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const prevTips = new Map(); // key -> {x,y}
+const particles = [];
+
+function drawSkeleton(c, pts, tips, scale, nums){
+  c.shadowBlur = 0;
+  c.strokeStyle = 'rgba(80,255,150,.9)'; c.lineWidth = 2.5 * scale + 0.5;
+  c.beginPath();
+  for (const [a,b] of CONNECTIONS){ c.moveTo(pts[a].x, pts[a].y); c.lineTo(pts[b].x, pts[b].y); }
+  c.stroke();
+  pts.forEach((p, i) => {
+    const isTip = tips.includes(i);
+    c.fillStyle = isTip ? '#ffffff' : '#ff4d5e';
+    c.beginPath(); c.arc(p.x, p.y, (isTip ? 7 : 4.5) * scale + 1, 0, Math.PI*2); c.fill();
+    if (nums){
+      c.font = '11px system-ui'; c.fillStyle = '#ffe680';
+      c.fillText(String(i), p.x + 7, p.y - 7);
+    }
+  });
+}
+function mapPoint(lm, fit){
+  return { x: fit.ox + (1 - lm.x) * fit.dw, y: fit.oy + lm.y * fit.dh };
+}
+function videoFit(){
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.max(W/vw, H/vh);
+  const dw = vw*s, dh = vh*s;
+  return { ox:(W-dw)/2, oy:(H-dh)/2, dw, dh };
+}
+function side(s, p){ return (s.x2-s.x1)*(p.y-s.y1) - (s.y2-s.y1)*(p.x-s.x1); }
+function segIntersectT(s, a, b){
+  // returns t along string [0..1] if segment a->b crosses the string, else -1
+  const d1 = side(s,a), d2 = side(s,b);
+  if (d1 === 0 || Math.sign(d1) === Math.sign(d2)) return -1;
+  const k = d1 / (d1 - d2);
+  const ix = a.x + (b.x-a.x)*k, iy = a.y + (b.y-a.y)*k;
+  const len2 = (s.x2-s.x1)**2 + (s.y2-s.y1)**2;
+  const t = ((ix-s.x1)*(s.x2-s.x1) + (iy-s.y1)*(s.y2-s.y1)) / len2;
+  return (t >= 0 && t <= 1) ? { t, ix, iy } : -1;
+}
+
+function spawnParticles(x, y, h, v){
+  const n = 10 + Math.floor(v*25);
+  for (let i = 0; i < n; i++){
+    const a = Math.random()*Math.PI*2, sp = 1 + Math.random()*4*(0.5+v);
+    particles.push({ x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:1, h });
+  }
+}
+
+let lastVideoTime = -1, lastResult = null;
+let fps = 0, fpsAcc = 0, fpsN = 0, lastFrame = performance.now();
+
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt = now - lastFrame; lastFrame = now;
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc > 500){ fps = Math.round(1000*fpsN/fpsAcc); fpsAcc = 0; fpsN = 0; }
+
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime){
+    lastVideoTime = video.currentTime;
+    lastResult = landmarker.detectForVideo(video, now);
+  }
+  const fit = videoFit();
+
+  // background: dimmed mirrored video
+  ctx.save();
+  ctx.translate(W, 0); ctx.scale(-1, 1);
+  ctx.drawImage(video, fit.ox, fit.oy, fit.dw, fit.dh);
+  ctx.restore();
+  const dim = 0.85 * (1 - camBrightEl.value / 100);
+  if (dim > 0){ ctx.fillStyle = `rgba(4,6,12,${dim})`; ctx.fillRect(0,0,W,H); }
+
+  const hands = [];
+  if (lastResult && lastResult.landmarks){
+    lastResult.landmarks.forEach((lms, i) => {
+      const label = lastResult.handedness?.[i]?.[0]?.categoryName || ('h'+i);
+      hands.push({ key: label + i, pts: lms.map(l => mapPoint(l, fit)) });
+    });
+  }
+
+  // brightness from distance between the two index fingertips
+  let bridge = null;
+  if (hands.length === 2){
+    const a = hands[0].pts[8], b = hands[1].pts[8];
+    const dist = Math.hypot(a.x-b.x, a.y-b.y) / Math.hypot(W,H);
+    const cutoff = 900 + Math.min(1, dist*1.6) * 7000;
+    if (filter) filter.frequency.setTargetAtTime(cutoff, ac.currentTime, 0.05);
+    bridge = { a, b, dist };
+  }
+
+  // pluck detection
+  const tips = allFingersEl.checked ? [4,8,12,16,20] : [8];
+  const seen = new Set();
+  for (const h of hands){
+    for (const tip of tips){
+      const key = h.key + ':' + tip; seen.add(key);
+      const p = h.pts[tip];
+      const prev = prevTips.get(key);
+      if (prev){
+        const speed = Math.hypot(p.x-prev.x, p.y-prev.y);
+        if (speed < H*0.4){ // ignore tracking jumps
+          strings.forEach((s, idx) => {
+            const hit = segIntersectT(s, prev, p);
+            if (hit !== -1 && now - s.last > 90){
+              s.last = now;
+              const v = Math.min(1, speed / (H*0.06));
+              s.amp = 10 + 26*v; s.phase = 0; s.hitT = hit.t;
+              pluck(s.freq, v, (hit.ix / W)*1.6 - 0.8);
+              spawnParticles(hit.ix, hit.iy, s.hue, v);
+            }
+          });
+        }
+      }
+      prevTips.set(key, { x:p.x, y:p.y });
+    }
+  }
+  for (const k of [...prevTips.keys()]) if (!seen.has(k)) prevTips.delete(k);
+
+  // draw strings
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of strings){
+    s.phase += dt * 0.045;
+    s.amp *= Math.pow(0.9935, dt);
+    const mx = s.x1 + (s.x2-s.x1)*s.hitT, my = s.y1 + (s.y2-s.y1)*s.hitT;
+    const nx = -(s.y2-s.y1), ny = (s.x2-s.x1); const nl = Math.hypot(nx,ny);
+    const off = Math.sin(s.phase) * s.amp;
+    const cx = mx + nx/nl*off*2, cy = my + ny/nl*off*2;
+    const glow = Math.min(1, s.amp/20);
+    ctx.strokeStyle = `hsla(${s.hue},90%,${55+glow*25}%,${0.35+glow*0.65})`;
+    ctx.lineWidth = 1.4 + glow*2.5;
+    ctx.shadowColor = `hsl(${s.hue},100%,60%)`; ctx.shadowBlur = 6 + glow*24;
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.quadraticCurveTo(cx, cy, s.x2, s.y2); ctx.stroke();
+    // end pegs
+    ctx.fillStyle = `hsla(${s.hue},90%,70%,.8)`;
+    ctx.beginPath(); ctx.arc(s.x1, s.y1, 3, 0, Math.PI*2); ctx.arc(s.x2, s.y2, 3, 0, Math.PI*2); ctx.fill();
+  }
+
+  // bridge between hands
+  if (bridge){
+    const h = 300 - bridge.dist*200;
+    ctx.strokeStyle = `hsla(${h},100%,65%,0.85)`; ctx.lineWidth = 3;
+    ctx.shadowColor = `hsl(${h},100%,60%)`; ctx.shadowBlur = 25;
+    ctx.beginPath(); ctx.moveTo(bridge.a.x, bridge.a.y);
+    const midx = (bridge.a.x+bridge.b.x)/2, midy = (bridge.a.y+bridge.b.y)/2 + Math.sin(now/180)*12;
+    ctx.quadraticCurveTo(midx, midy, bridge.b.x, bridge.b.y); ctx.stroke();
+  }
+
+  // particles
+  ctx.shadowBlur = 0;
+  for (let i = particles.length-1; i >= 0; i--){
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.vx *= 0.98; p.life -= dt/900;
+    if (p.life <= 0){ particles.splice(i,1); continue; }
+    ctx.fillStyle = `hsla(${p.h},100%,70%,${p.life})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 1.5 + p.life*2, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // hand skeletons
+  if (showSkelEl.checked) for (const h of hands) drawSkeleton(ctx, h.pts, tips, 1, showNumsEl.checked);
+
+  // picture-in-picture: raw camera + landmarks
+  if (showPipEl.checked){
+    const pw = Math.min(320, W * 0.28);
+    const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+    const ph = pw * vh / vw;
+    const px = 12, py = H - ph - 12;
+    ctx.save();
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(px, py, pw, ph, 10) : ctx.rect(px, py, pw, ph); ctx.clip();
+    ctx.translate(px + pw, py); ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, pw, ph);
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
+    if (lastResult && lastResult.landmarks){
+      for (const lms of lastResult.landmarks){
+        const pts = lms.map(l => ({ x: px + (1 - l.x) * pw, y: py + l.y * ph }));
+        drawSkeleton(ctx, pts, tips, 0.5, false);
+      }
+    }
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1;
+    ctx.strokeRect(px, py, pw, ph);
+  }
+
+  statusEl.textContent = `ידיים: ${hands.length} · ${fps} FPS`;
+}
+
+// ---------- Settings toggle ----------
+const gearEl = document.getElementById('gear');
+const hudEl = document.getElementById('hud');
+function setHud(open){
+  hudEl.hidden = !open;
+  gearEl.setAttribute('aria-expanded', String(open));
+}
+gearEl.addEventListener('click', () => setHud(hudEl.hidden));
+
+// ---------- Keep the screen on while playing ----------
+let wakeLock = null;
+async function keepAwake(){
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+  catch {} // not supported or denied: the page still works
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && landmarker){
+    keepAwake();
+    if (ac && ac.state !== 'running') ac.resume();
+  }
+});
+
+document.getElementById('start').addEventListener('click', async (e) => {
+  const btn = e.currentTarget; btn.disabled = true;
+  const err = document.getElementById('err');
+  try {
+    setupAudio();
+    await ac.resume();
+    btn.textContent = 'מבקש גישה למצלמה…';
+    await setupCamera();
+    btn.textContent = 'טוען מודל…';
+    await setupTracking();
+    document.getElementById('ui').hidden = true;
+    document.getElementById('gear').hidden = false;
+    // settings open by default on wide screens, collapsed on phones
+    setHud(window.innerWidth >= 700);
+    keepAwake();
+    resize();
+    requestAnimationFrame(loop);
+  } catch (ex){
+    console.error(ex);
+    err.textContent = 'שגיאה: ' + (ex && ex.message ? ex.message : ex) + ' — ודא שיש מצלמה, שאישרת גישה, ושיש חיבור לאינטרנט (לטעינת המודל).';
+    btn.disabled = false; btn.textContent = 'נסה שוב';
+  }
+});
+resize();
+</script>
+</body>
+</html>
