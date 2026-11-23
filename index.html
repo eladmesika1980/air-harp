@@ -42,16 +42,35 @@
       <option value="dorian">דורי</option>
     </select>
   </label>
+  <label>צליל:
+    <select id="sound">
+      <option value="harp">נבל</option>
+      <option value="oud">עוד / גיטרה</option>
+      <option value="kalimba">קלימבה</option>
+      <option value="marimba">מרימבה</option>
+      <option value="bells">פעמונים</option>
+      <option value="synth">סינתסייזר</option>
+    </select>
+  </label>
+  <label>מספר מיתרים:
+    <select id="numStrings">
+      <option>4</option><option>5</option><option selected>6</option>
+      <option>7</option><option>8</option><option>9</option>
+    </select>
+  </label>
   <label>בהירות מצלמה: <input type="range" id="camBright" min="0" max="100" value="75"></label>
   <label><input type="checkbox" id="showSkel" checked> הצג נקודות ושלד על הידיים</label>
   <label><input type="checkbox" id="showNums"> הצג מספרי נקודות (0–20)</label>
   <label><input type="checkbox" id="showPip" checked> חלון מצלמה קטן בפינה</label>
+  <label><input type="checkbox" id="freeTune"> כיוון חופשי (בלי הצמדה לסולם)</label>
+  <div><button id="resetTune" style="padding:6px 14px;font-size:14px">איפוס כיוון</button></div>
+  <div style="color:#8892a8">צבטו (אגודל + אצבע) ליד קצה מיתר ומתחו:<br>ארוך = נמוך, קצר = גבוה</div>
   <div style="color:#8892a8">הרחקת הידיים = צליל בהיר יותר</div>
 </div>
 
 <div id="ui">
   <h1>🎶 נבל אוויר</h1>
-  <p>העבר את קצה האצבע דרך המיתרים כדי לפרוט. המצלמה מעובדת מקומית בדפדפן – שום דבר לא נשלח החוצה.</p>
+  <p>העבר את קצה האצבע דרך המיתרים כדי לפרוט. כדי לכוון מיתר – צבוט (אגודל + אצבע) את הנקודה בקצה שלו ומתח או קצר: ארוך = נמוך, קצר = גבוה. המצלמה מעובדת מקומית בדפדפן – שום דבר לא נשלח החוצה.</p>
   <p style="font-size:14px">📱 בטלפון: הניחו אותו יציב מולכם. באייפון – כבו את מצב השקט, אחרת לא יישמע צליל.</p>
   <button id="start">הפעל מצלמה וסאונד</button>
   <p id="err" style="color:#ff8a8a"></p>
@@ -87,15 +106,26 @@ const SCALES = {
   hijaz:   [0,1,4,5,7,8,10],
   dorian:  [0,2,3,5,7,9,10],
 };
-const NUM_STRINGS = 9;
-const BASE_MIDI = 45; // A2
+const countEl = document.getElementById('numStrings');
+const MIN_STRINGS = 4, MAX_STRINGS = 9;
+const numStrings = () => clamp(parseInt(countEl.value, 10) || 6, MIN_STRINGS, MAX_STRINGS);
+const BASE_MIDI = 45; // A2, root of every scale
+// Length <-> pitch: long = low, short = high. Linear per semitone rather than the
+// physical 1/f, so the highest strings stay long enough to pluck.
+const MIN_MIDI = 40, MAX_MIDI = 76;      // E2 .. E5
+const LEN_MAX = 0.92, LEN_MIN = 0.28;    // string length as a fraction of screen width
+const ANCHOR_X = 0.04;                   // fixed end; the other end is the handle
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const freeEl = document.getElementById('freeTune');
 let strings = [];
+let pitches = [];   // MIDI note per string; fractional in free tuning
 
 function buildNotes(){
   const steps = SCALES[scaleEl.value];
   const notes = [];
   let i = 0;
-  while (notes.length < NUM_STRINGS){
+  const n = numStrings();
+  while (notes.length < n){
     const oct = Math.floor(i / steps.length);
     notes.push(BASE_MIDI + 12*oct + steps[i % steps.length]);
     i++;
@@ -103,26 +133,74 @@ function buildNotes(){
   return notes;
 }
 const midiToHz = m => 440 * Math.pow(2, (m-69)/12);
-const hue = i => 160 + i * (200 / NUM_STRINGS);
+const hue = i => 160 + i * (200 / pitches.length);
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lengthFor = m => LEN_MAX - (clamp(m, MIN_MIDI, MAX_MIDI) - MIN_MIDI) / (MAX_MIDI - MIN_MIDI) * (LEN_MAX - LEN_MIN);
+const pitchFor = f => MIN_MIDI + (LEN_MAX - clamp(f, LEN_MIN, LEN_MAX)) / (LEN_MAX - LEN_MIN) * (MAX_MIDI - MIN_MIDI);
+function snapToScale(p){
+  const steps = SCALES[scaleEl.value];
+  let best = Math.round(p), bestD = Infinity;
+  for (let m = MIN_MIDI; m <= MAX_MIDI; m++){
+    if (!steps.includes(((m - BASE_MIDI) % 12 + 12) % 12)) continue;
+    const d = Math.abs(m - p);
+    if (d < bestD){ bestD = d; best = m; }
+  }
+  return best;
+}
+function noteName(p){
+  const m = Math.round(p), cents = Math.round((p - m) * 100);
+  return NOTE_NAMES[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1)
+    + (Math.abs(cents) >= 5 ? ` ${cents > 0 ? '+' : ''}${cents}¢` : '');
+}
 
 function layoutStrings(){
-  const notes = buildNotes();
-  strings = notes.map((midi, i) => {
-    // top = highest pitch; slight alternating tilt for a "woven" look
-    const t = 1 - i / (NUM_STRINGS - 1);
+  strings = pitches.map((midi, i) => {
+    // top = highest pitch by default; slight alternating tilt for a "woven" look
+    const t = 1 - i / (pitches.length - 1);
     const y = H * (0.14 + 0.72 * t);
-    const tilt = (i % 2 ? 1 : -1) * H * 0.03;
+    const len = lengthFor(midi);
+    const tilt = (i % 2 ? 1 : -1) * H * 0.03 * len;
     const old = strings[i] || {};
+    const x1 = W * ANCHOR_X;
     return {
-      x1: W*0.08, y1: y - tilt, x2: W*0.92, y2: y + tilt,
+      x1, y1: y - tilt, x2: x1 + W * len, y2: y + tilt,
       midi, freq: midiToHz(midi), hue: hue(i),
-      amp: old.amp || 0, phase: 0, hitT: old.hitT ?? 0.5, last: 0,
+      amp: old.amp || 0, phase: old.phase || 0, hitT: old.hitT ?? 0.5, last: old.last || 0,
     };
   });
 }
-scaleEl.addEventListener('change', layoutStrings);
 
-// ---------- Audio (Karplus-Strong plucked string) ----------
+// ---------- Tuning (saved in this browser only) ----------
+const TUNING_KEY = 'airharp.tuning.v2';
+function saveTuning(){
+  const sound = document.getElementById('sound').value;
+  try { localStorage.setItem(TUNING_KEY, JSON.stringify({ scale: scaleEl.value, free: freeEl.checked, sound, pitches })); } catch {}
+}
+function loadTuning(){
+  try {
+    const t = JSON.parse(localStorage.getItem(TUNING_KEY) || 'null');
+    const soundSel = document.getElementById('sound');
+    if (t && [...soundSel.options].some(o => o.value === t.sound)) soundSel.value = t.sound;
+    if (t && SCALES[t.scale] && Array.isArray(t.pitches) && t.pitches.length >= MIN_STRINGS && t.pitches.length <= MAX_STRINGS && t.pitches.every(Number.isFinite)){
+      scaleEl.value = t.scale; freeEl.checked = !!t.free; countEl.value = String(t.pitches.length);
+      pitches = t.pitches.map(p => clamp(p, MIN_MIDI, MAX_MIDI));
+      return;
+    }
+  } catch {}
+  pitches = buildNotes();
+}
+function resetTuning(){ pitches = buildNotes(); layoutStrings(); saveTuning(); }
+scaleEl.addEventListener('change', resetTuning);
+countEl.addEventListener('change', resetTuning);
+freeEl.addEventListener('change', () => {
+  if (!freeEl.checked){ pitches = pitches.map(snapToScale); layoutStrings(); }
+  saveTuning();
+});
+document.getElementById('resetTune').addEventListener('click', resetTuning);
+loadTuning();
+
+// ---------- Audio: shared chain (filter + reverb + compressor) ----------
 let ac, master, filter, wetGain;
 function setupAudio(){
   ac = new (window.AudioContext || window.webkitAudioContext)({latencyHint:'interactive'});
@@ -145,34 +223,114 @@ function makeImpulse(seconds, decay){
   }
   return buf;
 }
+// ---------- Sound types ----------
+const soundEl = document.getElementById('sound');
+// Every voice: (freq, velocity 0..1, out node) -> plays one note into `out`.
+const VOICES = { harp: voiceHarp, oud: voiceOud, kalimba: voiceKalimba, marimba: voiceMarimba, bells: voiceBells, synth: voiceSynth };
+
 function pluck(freq, velocity, pan){
-  const sr = ac.sampleRate;
-  const dur = 3.0;
-  const len = Math.floor(sr * dur);
+  const g = ac.createGain(); g.gain.value = 0.15 + 0.55 * velocity;
+  if (ac.createStereoPanner){ const p = ac.createStereoPanner(); p.pan.value = pan; g.connect(p); p.connect(master); }
+  else g.connect(master);
+  (VOICES[soundEl.value] || voiceHarp)(freq, velocity, g);
+}
+
+// Karplus-Strong plucked string rendered into a buffer.
+// bright: excitation brightness; t60: ring time (s); pickPos: 0 = none, else comb-filters the excitation like a pick position
+function ksString(freq, { bright, t60, dur, pickPos = 0 }){
+  const sr = ac.sampleRate, len = Math.floor(sr * dur);
   const buf = ac.createBuffer(1, len, sr);
   const out = buf.getChannelData(0);
   const N = Math.max(2, Math.round(sr / freq));
-  // excitation: noise, low-passed more for soft plucks
-  const bright = 0.35 + 0.6 * velocity;
   let prev = 0;
-  for (let i = 0; i < N; i++){
-    const n = Math.random()*2-1;
-    prev = prev + bright * (n - prev);
-    out[i] = prev;
+  for (let i = 0; i < N; i++){ const n = Math.random()*2-1; prev += bright * (n - prev); out[i] = prev; }
+  if (pickPos > 0){
+    const k = Math.max(1, Math.round(N * pickPos));
+    for (let i = N - 1; i >= k; i--) out[i] -= out[i - k];
   }
-  // per-sample decay chosen so the note rings ~T60 seconds (longer for low strings)
-  const t60 = 1.2 + 1.3 * Math.min(1, 110/freq);
   const decay = Math.exp(Math.log(0.001) / (t60 * sr));
-  for (let i = N; i < len; i++){
-    out[i] = decay * 0.5 * (out[i-N] + out[i-N-1 >= 0 ? i-N-1 : i-N]);
-  }
-  const src = ac.createBufferSource(); src.buffer = buf;
-  const g = ac.createGain(); g.gain.value = 0.15 + 0.55 * velocity;
-  const p = ac.createStereoPanner ? ac.createStereoPanner() : null;
-  if (p){ p.pan.value = pan; src.connect(g); g.connect(p); p.connect(master); }
-  else { src.connect(g); g.connect(master); }
-  src.start();
+  for (let i = N; i < len; i++) out[i] = decay * 0.5 * (out[i-N] + out[i-N-1 >= 0 ? i-N-1 : i-N]);
+  return buf;
 }
+function playBuffer(buf, out, rateFrom){
+  const src = ac.createBufferSource(); src.buffer = buf;
+  if (rateFrom){ // brief pitch drop at the attack, like a hard pluck
+    const t = ac.currentTime;
+    src.playbackRate.setValueAtTime(rateFrom, t);
+    src.playbackRate.exponentialRampToValueAtTime(1, t + 0.08);
+  }
+  src.connect(out); src.start();
+}
+// sine partial with a fast attack and exponential decay
+function partial(freq, peak, decay, out, type = 'sine'){
+  const t = ac.currentTime;
+  const o = ac.createOscillator(); o.type = type; o.frequency.value = freq;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(peak, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.004 + decay);
+  o.connect(g); g.connect(out);
+  o.start(t); o.stop(t + decay + 0.05);
+  return o;
+}
+
+function voiceHarp(f, v, out){
+  playBuffer(ksString(f, { bright: 0.35 + 0.6*v, t60: 1.2 + 1.3*Math.min(1, 110/f), dur: 3 }), out);
+}
+function voiceOud(f, v, out){
+  playBuffer(ksString(f, { bright: 0.6 + 0.4*v, t60: 0.5 + 0.6*Math.min(1, 110/f), dur: 1.6, pickPos: 0.18 }), out, 1.012);
+}
+function voiceKalimba(f, v, out){
+  const d = 0.9 + 0.8*Math.min(1, 220/f);
+  partial(f, 0.7, d, out);
+  partial(f * 5.4, 0.12 + 0.2*v, 0.12, out);   // metallic tine overtone
+  partial(f * 3, 0.05, 0.3, out);
+}
+function voiceMarimba(f, v, out){
+  const d = 0.4 + 0.6*Math.min(1, 150/f);
+  partial(f, 0.75, d, out);
+  partial(f * 4, 0.15 + 0.25*v, d * 0.3, out);   // woody 4th partial of a tuned bar
+  partial(f * 10, 0.04*v, 0.06, out);
+}
+function voiceBells(f, v, out){
+  // FM: an inharmonic modulator makes a glassy, chime-like spectrum
+  const t = ac.currentTime, ring = 3.2;
+  const car = ac.createOscillator(); car.frequency.value = f * 2;
+  const mod = ac.createOscillator(); mod.frequency.value = f * 2 * 3.5;
+  const modGain = ac.createGain();
+  modGain.gain.setValueAtTime(f * 2 * (1 + 3*v), t);
+  modGain.gain.exponentialRampToValueAtTime(f * 0.05, t + ring * 0.6);
+  mod.connect(modGain); modGain.connect(car.frequency);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.5, t + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + ring);
+  car.connect(g); g.connect(out);
+  car.start(t); mod.start(t); car.stop(t + ring + 0.05); mod.stop(t + ring + 0.05);
+  partial(f * 2 * 2.76, 0.08, ring * 0.5, out);
+}
+function voiceSynth(f, v, out){
+  const t = ac.currentTime, dur = 0.9;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 6;
+  lp.frequency.setValueAtTime(Math.min(12000, f * 4 + 3000 * v + 400), t);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(80, f * 1.2), t + 0.45);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.35, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  lp.connect(g); g.connect(out);
+  for (const cents of [-7, 7]){   // two slightly detuned saws
+    const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = cents;
+    o.connect(lp); o.start(t); o.stop(t + dur + 0.05);
+  }
+}
+
+// switching sound: save, and play a short arpeggio of the current strings
+soundEl.addEventListener('change', () => {
+  saveTuning();
+  if (!ac) return;
+  strings.slice(0, 4).forEach((s, i) => setTimeout(() => pluck(s.freq, 0.6, 0), i * 130));
+});
 
 // ---------- Hand tracking ----------
 let landmarker;
@@ -201,6 +359,9 @@ async function setupCamera(){
 const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 const prevTips = new Map(); // key -> {x,y}
 const particles = [];
+// Pinch = thumb tip (4) to index tip (8), relative to palm length (0 -> 9); hysteresis avoids flicker
+const PINCH_ON = 0.3, PINCH_OFF = 0.5;
+const handState = new Map(); // hand key -> { pinched, grab (string index or -1), lastNote }
 
 function drawSkeleton(c, pts, tips, scale, nums){
   c.shadowBlur = 0;
@@ -288,10 +449,58 @@ function loop(now){
     bridge = { a, b, dist };
   }
 
-  // pluck detection
+  // grab & stretch: pinch near a string's free end, move to change its length (= pitch)
+  const seenHands = new Set();
+  for (const h of hands){
+    seenHands.add(h.key);
+    let st = handState.get(h.key);
+    if (!st){ st = { pinched:false, grab:-1, lastNote:0 }; handState.set(h.key, st); }
+    const th = h.pts[4], ix = h.pts[8];
+    const palm = Math.hypot(h.pts[0].x - h.pts[9].x, h.pts[0].y - h.pts[9].y) || 1;
+    const d = Math.hypot(th.x - ix.x, th.y - ix.y) / palm;
+    h.pinch = { x:(th.x + ix.x) / 2, y:(th.y + ix.y) / 2 };
+    if (!st.pinched && d < PINCH_ON){
+      st.pinched = true;
+      const taken = new Set([...handState.values()].map(o => o.grab));
+      const reach = Math.max(36, Math.min(W, H) * 0.08);
+      let best = -1, bestD = reach;
+      strings.forEach((s, i) => {
+        if (taken.has(i)) return;
+        const dd = Math.hypot(s.x2 - h.pinch.x, s.y2 - h.pinch.y);
+        if (dd < bestD){ bestD = dd; best = i; }
+      });
+      st.grab = best;
+      if (best >= 0) st.lastNote = pitches[best];
+    } else if (st.pinched && d > PINCH_OFF){
+      st.pinched = false;
+      if (st.grab >= 0) saveTuning();
+      st.grab = -1;
+    }
+    if (st.grab >= 0){
+      const s = strings[st.grab];
+      const raw = pitchFor((h.pinch.x - s.x1) / W);
+      const p = freeEl.checked ? raw : snapToScale(raw);
+      if (p !== pitches[st.grab]){
+        pitches[st.grab] = p;
+        layoutStrings();
+        // soft preview whenever the string crosses to a new note
+        if (Math.abs(p - st.lastNote) >= (freeEl.checked ? 1 : 0.5)){
+          st.lastNote = p;
+          pluck(midiToHz(p), 0.25, (strings[st.grab].x2 / W) * 1.6 - 0.8);
+        }
+      }
+    }
+  }
+  for (const [k, st] of handState){
+    if (!seenHands.has(k)){ if (st.grab >= 0) saveTuning(); handState.delete(k); }
+  }
+  const held = new Set([...handState.values()].map(o => o.grab).filter(i => i >= 0));
+
+  // pluck detection (a hand that is holding a string does not pluck)
   const tips = allFingersEl.checked ? [4,8,12,16,20] : [8];
   const seen = new Set();
   for (const h of hands){
+    if (handState.get(h.key)?.grab >= 0) continue;
     for (const tip of tips){
       const key = h.key + ':' + tip; seen.add(key);
       const p = h.pts[tip];
@@ -318,7 +527,8 @@ function loop(now){
 
   // draw strings
   ctx.globalCompositeOperation = 'lighter';
-  for (const s of strings){
+  for (let idx = 0; idx < strings.length; idx++){
+    const s = strings[idx];
     s.phase += dt * 0.045;
     s.amp *= Math.pow(0.9935, dt);
     const mx = s.x1 + (s.x2-s.x1)*s.hitT, my = s.y1 + (s.y2-s.y1)*s.hitT;
@@ -330,9 +540,13 @@ function loop(now){
     ctx.lineWidth = 1.4 + glow*2.5;
     ctx.shadowColor = `hsl(${s.hue},100%,60%)`; ctx.shadowBlur = 6 + glow*24;
     ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.quadraticCurveTo(cx, cy, s.x2, s.y2); ctx.stroke();
-    // end pegs
+    // fixed peg, and the free end: the handle you pinch to stretch or shorten
+    const isHeld = held.has(idx);
     ctx.fillStyle = `hsla(${s.hue},90%,70%,.8)`;
-    ctx.beginPath(); ctx.arc(s.x1, s.y1, 3, 0, Math.PI*2); ctx.arc(s.x2, s.y2, 3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x1, s.y1, 3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x2, s.y2, isHeld ? 8 : 5, 0, Math.PI*2); ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = `hsla(${s.hue},90%,70%,${isHeld ? .9 : .35})`;
+    ctx.beginPath(); ctx.arc(s.x2, s.y2, isHeld ? 18 : 11, 0, Math.PI*2); ctx.stroke();
   }
 
   // bridge between hands
@@ -355,6 +569,21 @@ function loop(now){
     ctx.beginPath(); ctx.arc(p.x, p.y, 1.5 + p.life*2, 0, Math.PI*2); ctx.fill();
   }
   ctx.globalCompositeOperation = 'source-over';
+
+  // note names above each handle; big while being stretched
+  ctx.direction = 'ltr'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  strings.forEach((s, i) => {
+    const isHeld = held.has(i);
+    ctx.font = isHeld ? '600 18px system-ui' : '11px system-ui';
+    ctx.fillStyle = isHeld ? '#ffffff' : 'rgba(232,236,245,.5)';
+    ctx.fillText(noteName(pitches[i]), s.x2, s.y2 - (isHeld ? 22 : 13));
+  });
+  // pinch point marker
+  for (const h of hands){
+    if (!handState.get(h.key)?.pinched) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(h.pinch.x, h.pinch.y, 7, 0, Math.PI*2); ctx.stroke();
+  }
 
   // hand skeletons
   if (showSkelEl.checked) for (const h of hands) drawSkeleton(ctx, h.pts, tips, 1, showNumsEl.checked);
@@ -420,8 +649,8 @@ document.getElementById('start').addEventListener('click', async (e) => {
     await setupTracking();
     document.getElementById('ui').hidden = true;
     document.getElementById('gear').hidden = false;
-    // settings open by default on wide screens, collapsed on phones
-    setHud(window.innerWidth >= 700);
+    // settings start collapsed: when open they cover the string handles on the right
+    setHud(false);
     keepAwake();
     resize();
     requestAnimationFrame(loop);
