@@ -33,7 +33,7 @@
 <button id="gear" hidden aria-label="הגדרות" aria-expanded="false">⚙️</button>
 <div id="hud" hidden>
   <div id="status">טוען…</div>
-  <label><input type="checkbox" id="allFingers"> לפרוט עם כל האצבעות</label>
+  <label><input type="checkbox" id="allFingers" checked> לפרוט עם כל האצבעות</label>
   <label>סולם:
     <select id="scale">
       <option value="minpent">פנטטוני מינורי</option>
@@ -49,7 +49,7 @@
       <option value="kalimba">קלימבה</option>
       <option value="marimba">מרימבה</option>
       <option value="bells">פעמונים</option>
-      <option value="synth">סינתסייזר</option>
+      <option value="synth" selected>סינתסייזר</option>
     </select>
   </label>
   <label>מספר מיתרים:
@@ -172,7 +172,7 @@ function layoutStrings(){
 }
 
 // ---------- Tuning (saved in this browser only) ----------
-const TUNING_KEY = 'airharp.tuning.v2';
+const TUNING_KEY = 'airharp.tuning.v3';
 function saveTuning(){
   const sound = document.getElementById('sound').value;
   try { localStorage.setItem(TUNING_KEY, JSON.stringify({ scale: scaleEl.value, free: freeEl.checked, sound, pitches })); } catch {}

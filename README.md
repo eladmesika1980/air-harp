@@ -14,6 +14,7 @@ Play glowing strings in the air with your webcam. Hand tracking runs entirely in
 - **Sound:** six sound types, all synthesized in the Web Audio API (no samples), through a shared filter, convolution reverb and compressor:
   harp and oud/guitar (Karplus-Strong plucked string), kalimba and marimba (decaying sine partials),
   bells (FM synthesis), synth (detuned sawtooths through a sweeping low-pass). Saved with the tuning.
+- **Defaults:** synth sound, and every fingertip plucks (the "all fingers" box is on).
 - **Visuals:** Canvas 2D
 
 ## On a phone
